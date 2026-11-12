@@ -1,0 +1,17 @@
+{
+  "name": "mimo-usage-budget-plugin-mimocode",
+  "version": "0.1.0",
+  "description": "MiMo Code TUI 插件 - Token Plan 今日预算 + 5h 滚动窗口判断（模型感知，不误报）",
+  "keywords": ["mimocode", "mimo-code-plugin", "token-plan", "budget", "sidebar"],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "exports": {
+    "./tui": "./mimo-usage-budget.tsx"
+  },
+  "files": ["mimo-usage-budget.tsx"],
+  "peerDependencies": {
+    "@mimo-ai/plugin": ">=0.1.0",
+    "@opentui/core": ">=0.1.0",
+    "@opentui/solid": ">=0.1.0",
+    "solid-js": ">=1.0.0"
+  }
+}

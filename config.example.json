@@ -1,0 +1,8 @@
+{
+  "tp_api_key": "",
+  "cookie": "",
+  "window_hours": 5,
+  "pacing": "adaptive",
+  "window_budget_override": 0,
+  "sample_keep_days": 8
+}
