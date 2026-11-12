@@ -209,39 +209,68 @@ def compute_metrics(plan: dict, cfg: dict, now: datetime | None = None) -> dict:
     window_budget = override if override > 0 else daily_budget * (wh / 24)
 
     # ── 采样序列 → 今日用量 / 滚动窗口用量 / 恢复时间
+    # 用「累计计数器 + 线性插值」而不是「相邻差值求和」：
+    # 差值求和会把断档期间的全部消耗记到「恢复采样那一刻」，导致断档时显示 0%、
+    # 恢复后瞬间爆表。插值把消耗按时间比例摊开，两种情况都消失。
     samples = sorted(load_state().get("samples", []), key=lambda s: s["t"])
-    deltas = []
-    prev = None
-    for s in samples:
-        if prev is not None:
-            d = float(s["used"]) - float(prev["used"])
-            if d > 0:
-                deltas.append((s["t"], d))
-        prev = s
+
+    def used_at(ts):
+        """累计用量在时刻 ts 的插值估计；无采样返回 None。"""
+        if not samples:
+            return None
+        if ts <= samples[0]["t"]:
+            return float(samples[0]["used"])
+        if ts >= samples[-1]["t"]:
+            return float(samples[-1]["used"])
+        for i in range(1, len(samples)):
+            a, b = samples[i - 1], samples[i]
+            if a["t"] <= ts <= b["t"]:
+                ua, ub = float(a["used"]), float(b["used"])
+                if ub <= ua:          # 计数器回绕（套餐周期重置）：不跨回绕插值
+                    return ua
+                if b["t"] == a["t"]:
+                    return ub
+                return ua + (ub - ua) * (ts - a["t"]) / (b["t"] - a["t"])
+        return float(samples[-1]["used"])
+
+    def ts_at_used(target):
+        """累计用量首次达到 target 的时刻（插值）；找不到返回 None。"""
+        if not samples:
+            return None
+        if target <= float(samples[0]["used"]):
+            return samples[0]["t"]
+        for i in range(1, len(samples)):
+            a, b = samples[i - 1], samples[i]
+            ua, ub = float(a["used"]), float(b["used"])
+            if ub <= ua:
+                continue
+            if ua <= target <= ub:
+                if ub == ua:
+                    return b["t"]
+                return a["t"] + (b["t"] - a["t"]) * (target - ua) / (ub - ua)
+        return samples[-1]["t"]
 
     local = datetime.now().astimezone()
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    today_used = sum(d for t, d in deltas if t >= midnight)
+    win_start = now.timestamp() - wh * 3600
+
+    latest = float(samples[-1]["used"]) if samples else 0.0
+    day_base, win_base = used_at(midnight), used_at(win_start)
+    today_used = max(0.0, latest - day_base) if day_base is not None else 0.0
+    window_used = max(0.0, latest - win_base) if win_base is not None else 0.0
+
     today_note = ""
     if not samples:
         today_note = "（无采样，先运行 sample）"
     elif samples[0]["t"] > midnight:
-        today_note = "（今日起点采样缺失，数值偏小）"
-
-    win_start = now.timestamp() - wh * 3600
-    in_win = [(t, d) for t, d in deltas if t > win_start]
-    window_used = sum(d for _, d in in_win)
+        today_note = "（今日起点无采样，按最早采样外推，数值偏大）"
 
     verdict, resume_at = "ok", None
     if window_budget > 0 and window_used > window_budget:
         verdict = "pause"
-        acc, resume_ts = 0.0, in_win[-1][0] if in_win else now.timestamp()
-        for t, d in in_win:  # 从最旧的消耗开始“滑出”
-            acc += d
-            if window_used - acc <= window_budget:
-                resume_ts = t
-                break
-        resume_at = resume_ts + wh * 3600
+        # 需要「滑出」窗口的累计用量降到 latest - window_budget 那一刻起，才算恢复
+        hit = ts_at_used(latest - window_budget) or now.timestamp()
+        resume_at = hit + wh * 3600
 
     return {
         "plan": plan["plan"],

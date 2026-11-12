@@ -30,7 +30,7 @@ Token Plan 只有月度总额度，没有 Codex 那种 5 小时限速。mimo-usa
 3. 复制 config.example.json 到 ~/.mimo-usage-budget/config.json，
    然后引导我到开放平台 Token Plan 页领取 tp- 开头的专属 API Key，
    填入 tp_api_key 字段（暂时拿不到就先留空）
-4. 可选：参考 install.sh 里的 launchd 段落，配置每 10 分钟自动采样
+4. 可选：配置每 10 分钟定时采样。**注意**：macOS 隐私保护禁止 launchd 读取 Desktop / Documents / Downloads 里的文件，项目放在这几处时该项无效、会静默失败；此时跳过即可——MiMo Code 开着时插件每分钟自动采样，够用
 5. 验证：运行 python3 budget.py show，能输出面板即安装成功
 6. 最后提醒我重启 MiMo Code，让侧栏插件生效
 ```
@@ -61,6 +61,8 @@ python3 budget.py watch   # 常驻刷新（放终端分栏里瞄一眼）
 python3 budget.py check   # 一行结论，exit 0=可继续 2=建议暂停
 ```
 
+**数据从哪来**：本月额度直接取自 API；**今日与 5h 窗口**由本地采样推算——MiMo Code 开着时插件每分钟记一次，采样越密越准。采样停超过 15 分钟，面板会提示「⚠ 采样已停 N 分钟」，此时这两条是**外推值**，别当实数。
+
 ## 配置
 
 `~/.mimo-usage-budget/config.json`（凭证二选一，推荐 tp- key）：
@@ -72,7 +74,7 @@ python3 budget.py check   # 一行结论，exit 0=可继续 2=建议暂停
 | `window_hours` | 滚动窗口小时数，默认 `5` |
 | `pacing` | `adaptive`（默认：剩余额度摊到剩余天数）或 `fixed` |
 
-判断逻辑：窗口预算 = 日预算 × window_hours ÷ 24；超出时计算窗口滑动的恢复时刻，提示你停到那个点。
+判断逻辑：窗口预算 = 日预算 × window_hours ÷ 24；今日与窗口用量由采样序列**线性插值**推算（断档期间的消耗按时间比例摊开，不会整段堆到恢复采样那一刻），超出时计算窗口滑动的恢复时刻。
 
 
 > TUI 插件实现参考了 MIT 许可的 [mimo-ds-usage-monitor](https://github.com/Enderman112/mimo-ds-usage-monitor)（致谢），该参考部分仍按 MIT 提供。

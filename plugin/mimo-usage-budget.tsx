@@ -152,47 +152,74 @@ interface Metrics {
   resumeLocal: string | null
   used: number
   total: number
+  /** 距最近一次采样的秒数；>15 分钟视为采样陈旧（TUI 关闭或采样中断） */
+  staleSec: number
+  todayNote: string
 }
 
 function compute(plan: PlanInfo, winHours: number): Metrics {
   const dayBudget = plan.remaining / Math.max(1 / 24, plan.hoursLeft / 24)
   const winBudget = dayBudget * (winHours / 24)
 
-  const samples = readSamplesFromState()
-  const deltas: Array<[number, number]> = []
-  let prev: { t: number; used: number } | null = null
-  for (const s of samples) {
-    if (prev) {
-      const d = s.used - prev.used
-      if (d > 0) deltas.push([s.t, d])
+  // 累计计数器 + 线性插值（与 budget.py 一致）。
+  // 不要用相邻差值求和：断档期间的消耗会被整段记到「恢复采样那一刻」，
+  // 导致断档时显示 0%、恢复后瞬间爆表。
+  const samples = readSamplesFromState().slice().sort((a, b) => a.t - b.t)
+
+  const usedAt = (ts: number): number | null => {
+    if (!samples.length) return null
+    if (ts <= samples[0].t) return samples[0].used
+    if (ts >= samples[samples.length - 1].t) return samples[samples.length - 1].used
+    for (let i = 1; i < samples.length; i++) {
+      const a = samples[i - 1]
+      const b = samples[i]
+      if (a.t <= ts && ts <= b.t) {
+        if (b.used <= a.used) return a.used // 计数器回绕（套餐周期重置）：不跨回绕插值
+        if (b.t === a.t) return b.used
+        return a.used + (b.used - a.used) * ((ts - a.t) / (b.t - a.t))
+      }
     }
-    prev = s
+    return samples[samples.length - 1].used
   }
+
+  const tsAtUsed = (target: number): number | null => {
+    if (!samples.length) return null
+    if (target <= samples[0].used) return samples[0].t
+    for (let i = 1; i < samples.length; i++) {
+      const a = samples[i - 1]
+      const b = samples[i]
+      if (b.used <= a.used) continue
+      if (a.used <= target && target <= b.used) {
+        if (b.used === a.used) return b.t
+        return a.t + (b.t - a.t) * ((target - a.used) / (b.used - a.used))
+      }
+    }
+    return samples[samples.length - 1].t
+  }
+
   const nowSec = Date.now() / 1000
   const winStart = nowSec - winHours * 3600
-  const inWin = deltas.filter(([t]) => t > winStart)
-  const winUsed = inWin.reduce((a, [, d]) => a + d, 0)
-
   const midnight = new Date()
   midnight.setHours(0, 0, 0, 0)
-  const todayUsed = deltas
-    .filter(([t]) => t >= midnight.getTime() / 1000)
-    .reduce((a, [, d]) => a + d, 0)
+
+  const latest = samples.length ? samples[samples.length - 1].used : 0
+  const dayBase = usedAt(midnight.getTime() / 1000)
+  const winBase = usedAt(winStart)
+  const todayUsed = dayBase === null ? 0 : Math.max(0, latest - dayBase)
+  const winUsed = winBase === null ? 0 : Math.max(0, latest - winBase)
+
+  let todayNote = ""
+  if (!samples.length) todayNote = "（无采样）"
+  else if (samples[0].t > midnight.getTime() / 1000) todayNote = "（起点无采样，外推偏大）"
+
+  const staleSec = samples.length ? Math.max(0, nowSec - samples[samples.length - 1].t) : Infinity
 
   let verdict: "ok" | "pause" = "ok"
   let resumeLocal: string | null = null
   if (winBudget > 0 && winUsed > winBudget) {
     verdict = "pause"
-    let acc = 0
-    let resumeTs = inWin.length ? inWin[inWin.length - 1][0] : nowSec
-    for (const [t, d] of inWin) {
-      acc += d
-      if (winUsed - acc <= winBudget) {
-        resumeTs = t
-        break
-      }
-    }
-    const dt = new Date((resumeTs + winHours * 3600) * 1000)
+    const hit = tsAtUsed(latest - winBudget) ?? nowSec
+    const dt = new Date((hit + winHours * 3600) * 1000)
     resumeLocal = `${String(dt.getHours()).padStart(2, "0")}:${String(dt.getMinutes()).padStart(2, "0")}`
   }
 
@@ -207,6 +234,8 @@ function compute(plan: PlanInfo, winHours: number): Metrics {
     resumeLocal,
     used: plan.used,
     total: plan.total,
+    staleSec,
+    todayNote,
   }
 }
 
@@ -316,6 +345,10 @@ function BudgetPanel(props: {
                       )}
                     >
                       [{progressBar(m().todayBudget ? m().todayUsed / m().todayBudget : 0, 10)}]
+                      {" " +
+                        (m().todayBudget ? ((m().todayUsed / m().todayBudget) * 100).toFixed(0) : "0") +
+                        "%"}
+                      {m().todayNote}
                     </span>
                   </text>
                   <text>
@@ -327,6 +360,11 @@ function BudgetPanel(props: {
                       {" " + (m().winBudget ? ((m().winUsed / m().winBudget) * 100).toFixed(0) : "0")}%
                     </span>
                   </text>
+                  <Show when={m().staleSec > 900}>
+                    <text fg="yellow">
+                      ⚠ 采样已停 {Math.round(m().staleSec / 60)} 分钟，今日/窗口为外推值
+                    </text>
+                  </Show>
                   <Show
                     when={m().verdict === "ok"}
                     fallback={

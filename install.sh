@@ -16,7 +16,8 @@ else
 fi
 
 echo "==> 2/4 安装 /budget 提示命令（插件未加载时的后备）"
-cp "$ROOT/command/budget.md" "$MIMO_CFG/command/budget.md"
+# 把 __BUDGET_ROOT__ 换成本地实际路径，避免命令文件里写死绝对路径
+sed "s#__BUDGET_ROOT__#${ROOT}#g" "$ROOT/command/budget.md" > "$MIMO_CFG/command/budget.md"
 echo "    -> $MIMO_CFG/command/budget.md"
 
 echo "==> 3/4 安装 TUI 侧栏插件（mimo plugin，自动登记 tui.json）"
@@ -31,10 +32,18 @@ else
 fi
 
 echo "==> 4/4 可选：定时采样（launchd，每 10 分钟记录一次用量，供 5h 窗口计算）"
-read -r -p "    是否安装定时采样？[y/N] " yn
-if [ "${yn:-N}" = "y" ] || [ "${yn:-N}" = "Y" ]; then
-  PLIST="$HOME/Library/LaunchAgents/com.mimo-usage-budget.sample.plist"
-  cat > "$PLIST" <<PLIST
+case "$ROOT" in
+  "$HOME/Desktop"/*|"$HOME/Documents"/*|"$HOME/Downloads"/*)
+    echo "    ⚠ 已跳过：macOS 隐私保护不允许 launchd 读取 Desktop/Documents/Downloads 里的文件。"
+    echo "      项目放在这几个目录时定时采样会静默失败（sample.err 出现 Operation not permitted）。"
+    echo "      想用就把项目移到别处（如 ~/dev/）再重跑本脚本。"
+    echo "      不装也够用：MiMo Code 开着时插件每分钟自动采样。"
+    ;;
+  *)
+    read -r -p "    是否安装定时采样？[y/N] " yn
+    if [ "${yn:-N}" = "y" ] || [ "${yn:-N}" = "Y" ]; then
+      PLIST="$HOME/Library/LaunchAgents/com.mimo-usage-budget.sample.plist"
+      cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -51,9 +60,11 @@ if [ "${yn:-N}" = "y" ] || [ "${yn:-N}" = "Y" ]; then
 </dict>
 </plist>
 PLIST
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
-  echo "    已加载 $PLIST"
-fi
+      launchctl unload "$PLIST" 2>/dev/null || true
+      launchctl load "$PLIST"
+      echo "    已加载 $PLIST"
+    fi
+    ;;
+esac
 
 echo "完成。运行 python3 $ROOT/budget.py show 查看面板。"
